@@ -28,7 +28,9 @@ Run ~M-x agent-chat~. Configure ~agent-chat-agents~ for external ACP agents;
 ~agent-chat-codex-local-backend~ selects the local Codex implementation.
 The Emacs backend uses [[https://github.com/Jamie-Cui/codex-acp.el][codex-acp.el]]
 and its workspace tools. Authenticate the Codex CLI before opening a connection.
-Magent support is optional and requires its separate package.
+Magent support is optional and requires its separate package. Its in-process
+client keeps Agent Chat's control plane local, so Magent conversations also work
+in TRAMP projects.
 
 *** Source-only dependencies
 
@@ -124,8 +126,9 @@ picker.  An open session reuses its buffer, including while it is running.
 ~C-c C-f~, ~? f~, ~/fork~ or ~M-x agent-chat-fork~ branches a conversation into a
 new persistent session with the same backend, workspace, scope, model and effort.
 The backend must advertise both ACP ~session/fork~ and ~session/load~; the Emacs
-Codex adapter supports these for local and TRAMP conversations.  History is
-loaded from the new backend session.  The original keeps its draft and queue;
+Codex adapter and Magent support these for local and TRAMP conversations.
+History is loaded from the new backend session.  The original keeps its draft
+and queue;
 Agent Chat permission bypass and additional directory grants are not inherited.
 Forking also works while Running or awaiting approval: the original turn
 continues on its own connection.  The fork uses the backend's saved snapshot;

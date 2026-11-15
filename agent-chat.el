@@ -1472,7 +1472,8 @@ history use the external command to retain their original Codex tools."
   '((codex :name "Codex" :command ("codex-acp")
            :remote-client-maker agent-chat--codex-remote-client
            :general-client-maker agent-chat--codex-general-client)
-    (magent :name "Magent" :client-maker agent-chat--magent-client))
+    (magent :name "Magent" :client-maker agent-chat--magent-client
+            :remote t))
   "ACP agent configurations, independent of any other frontend.
 Each value is a plist with :name and either :command (an argv list) or
 :client-maker (a function taking the conversation buffer).

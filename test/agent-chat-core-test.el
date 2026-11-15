@@ -1266,6 +1266,32 @@
        (should (eq (agent-chat--session-client agent-chat--session) 'client))
        (setf (agent-chat--session-client agent-chat--session) nil)))))
 
+(ert-deftest agent-chat-tramp-accepts-magent-in-process-client ()
+  "Magent's in-process client accepts TRAMP directories.
+Its control plane stays local, so it needs `:remote t' rather than a separate
+remote factory.  Without that declaration a remote Magent project was rejected
+before the client was ever created."
+  (should (plist-get (alist-get 'magent agent-chat-agents) :remote))
+  (agent-chat--with-test-composer
+   (let ((default-directory "/ssh:test:/work/project/") selected)
+     (cl-letf (((symbol-function 'agent-chat--magent-client)
+                (lambda (buffer) (setq selected buffer) 'magent-client))
+               ((symbol-function 'agent-chat--connect) #'ignore))
+       (agent-chat--begin-connection 'magent)
+       (should (eq selected (current-buffer)))
+       (should (eq (agent-chat--session-client agent-chat--session)
+                   'magent-client))
+       (should (eq (agent-chat--session-phase agent-chat--session) 'connecting))
+       (setf (agent-chat--session-client agent-chat--session) nil)))))
+
+(ert-deftest agent-chat-tramp-rejects-command-agent-without-remote-factory ()
+  "An external command without remote support is still refused for TRAMP."
+  (let ((agent-chat-agents
+         '((codex :name "Codex" :command ("codex-acp")))))
+    (should-error (agent-chat--start 'codex "/ssh:test:/work/project/"
+                                     'directory '(:action new))
+                  :type 'user-error)))
+
 (ert-deftest agent-chat-tramp-source-retains-unsaved-context ()
   (with-temp-buffer
     (setq default-directory "/ssh:host:/work/" buffer-file-name "/ssh:host:/work/file.el")
