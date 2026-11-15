@@ -1,0 +1,170 @@
+* Agent Chat
+
+An Emacs ACP frontend with an editable draft, streamed messages, permission
+prompts, queued input, session history, image attachments and local/TRAMP Codex
+workspace tools. Loading the package does not start an agent process.
+
+** Installation
+
+Requires Emacs 30.1 or newer, ACP 0.17.1, Ebox 3.0.0, Transient 0.11.0 and
+codex-acp 0.1.0 or newer. Ebox also requires Ecss. Until these packages are
+available from your package archives, install them from their repositories:
+
+#+begin_src emacs-lisp
+(use-package ecss
+  :vc (:url "https://github.com/emacs-taf/ecss" :lisp-dir ".")
+  :ensure t :defer t)
+(use-package ebox
+  :vc (:url "https://github.com/emacs-taf/ebox" :lisp-dir ".")
+  :ensure t :defer t)
+(use-package codex-acp
+  :vc (:url "https://github.com/Jamie-Cui/codex-acp.el")
+  :ensure t :defer t)
+(use-package agent-chat
+  :vc (:url "https://github.com/Jamie-Cui/agent-chat")
+  :ensure t
+  :commands (agent-chat agent-chat-new)
+  :config (agent-chat-setup))
+#+end_src
+
+Run ~M-x agent-chat~. Configure ~agent-chat-agents~ for external ACP agents;
+~agent-chat-codex-local-backend~ selects the local Codex implementation.
+The Emacs backend uses [[https://github.com/Jamie-Cui/codex-acp.el][codex-acp.el]]
+and its workspace tools. Authenticate the Codex CLI before opening a connection.
+Magent support is optional and requires its separate package.
+
+** Optional integrations
+
+- ~consult-agent-chat~ requires Consult and Perspective.
+- ~agent-chat-mode-line~ requires Perspective; enable
+  ~agent-chat-mode-line-mode~ explicitly.
+- ~agent-chat-popwin~ requires Popwin. Add ~agent-chat-popwin-layout~ to
+  ~popwin:after-popup-hook~ and configure your desired popup dimensions.
+- Evil, Embark, Org asynchronous formula preview and Mermaid rendering are
+  optional. The core conversation UI works without them.
+- ~editor-context~ captures source selections for drafts and clipboard callers.
+
+** Usage
+
+A conversation opens as two native windows: read-only messages above an
+editable draft. They form an atomic window group. Use normal Emacs window
+commands to navigate, hide or maximize the pair; hiding retains the session
+and draft. Popwin placement and additional window keys belong to your config.
+Creating a conversation from either pane reuses the pair while the previous
+conversation continues in the background.
+Consult (~M-x consult-agent-chat-buffer~) lists one entry per conversation and previews both panes.
+Its columns show the buffer name, session title and status.  Missing titles
+show as Untitled; long titles are abbreviated.  Status shares the header's
+running, approval, connection and queue information.
+
+~agent-chat-mode-line-mode~ shows the current perspective's conversation count
+and activity, for example ~(work: A3 ⠋2 ?)~.  ~A3~ counts three conversations,
+the spinner marks two running sessions, and ~?~ marks one waiting for input.
+~!~ marks failed or disconnected sessions; an empty perspective shows ~A0~.
+Hover over the indicator for session titles and full statuses.
+
+The draft header also shows the session title on the right; hover over a
+shortened title to see its full text.
+~C-c C-r~ in either pane (or ~? N~) renames that title and saves it through
+the backend, keeping the draft and reading position.  The prompt starts with
+the current title; blank titles are rejected.  External agents must advertise
+title-setting support or a ~/rename~ command; the latter requires an idle turn.
+
+~gg/G~ and ~C-u/C-d~ use the normal Emacs/Evil movement bindings in the focused
+window.  In the message pane, ~C-n~ jumps to the next message or process-group
+block; ~C-p~ moves to the current block's start, then to the previous block.
+Paragraphs, lists and expanded process details stay within their parent block.
+Numeric prefix arguments repeat the jump.  The draft keeps its editing keys.
+~TAB~ on a process or tool heading expands or collapses it in place.
+Inside expanded tool or reasoning text, ~TAB~ collapses that detail and returns
+to its heading.
+The draft grows with its contents up to the smaller of
+~agent-chat-prompt-height~ (six text rows by default) and roughly one third of
+the panel; longer drafts scroll normally.  The two windows retain their own
+cursor and scroll positions.  Incoming messages follow the end only when
+the reader was already at the bottom.  An active selection defers message
+refresh until selection ends, so copying remains stable.
+
+With Evil enabled, normal-state ~RET~ sends or queues the draft and
+insert-state ~RET~ adds a newline. Use ~M-x agent-chat-submit~ to submit from any editing setup.  Message ~RET~ activates the link or control at point.  ~?~ opens
+conversation actions, and ~C-c C-c~ interrupts from either pane.  ~C-g~ first
+leaves an Evil editing state; in normal state it can dismiss the Popwin panel.
+Conversation commands also work through ~M-x~ from either pane.  Settings,
+permissions, interruption, reconnect, queue controls and ~revert-buffer~ resolve
+the owning conversation without moving the reading cursor.  Inserting a file,
+skill or clipboard image selects the draft at its saved insertion point.
+Menus retain their originating session and reject actions after it reconnects.
+
+The queue's Edit action (or ~e~ in the queue list) takes a pending message,
+including its image attachments, back into the main prompt and focuses it.
+The prompt must be empty; send or clear any existing draft first.  Other
+queued messages continue in order, subject to existing interruption or error
+pauses.  Submitting the edited prompt sends it normally or appends it to the
+end of the queue.  Edit no longer opens a separate editor or saves changes
+back into the original queue position.
+
+Use ~M-x agent-chat-load-session~, ~? l~ or ~/load~ to select a saved
+session by title or paste its ID in the same prompt.  The picker lists
+sessions for the current workspace.  Use ~/load SESSION-ID~ to skip the
+picker.  An open session reuses its buffer, including while it is running.
+
+~C-c C-f~, ~? f~, ~/fork~ or ~M-x agent-chat-fork~ branches a conversation into a
+new persistent session with the same backend, workspace, scope, model and effort.
+The backend must advertise both ACP ~session/fork~ and ~session/load~; the Emacs
+Codex adapter supports these for local and TRAMP conversations.  History is
+loaded from the new backend session.  The original keeps its draft and queue;
+Agent Chat permission bypass and additional directory grants are not inherited.
+Forking also works while Running or awaiting approval: the original turn
+continues on its own connection.  The fork uses the backend's saved snapshot;
+unfinished streamed output may be absent, and later output stays in the original.
+Completion opens the new conversation only if the initiating window is still
+selected.
+If a saved session already has an active writer, ~C-c C-f~ forks its history
+while the original stays open.  To continue the same session, release it in
+the other client and press ~? r~ (Retry same session).  This retries the saved
+ID, including when loading a newly created fork fails.  Other reconnects
+start a new session.
+
+Pending prompts appear above the draft in the input window, with clickable
+Withdraw, Edit, and Steer controls; ~? Q~ opens queue management.  This preview
+is display-only and never becomes part of the editable or submitted draft.
+
+When an Emacs Codex file tool or command working directory needs access
+outside the project, its operation pauses for the normal approval transient.
+~Y~ allows the displayed directory tree until disconnect and retries the
+operation in the current turn; ~n~ rejects it.  Directory grants always ask,
+even with session permission bypass enabled.  Writes and commands still use
+their ordinary operation approvals.  ~q~ or switching away defers the request;
+~C-c C-p~ reopens it.  Background conversations never steal focus.
+This replaces the manual ~/allow-directory~ and ~? d~ actions.  Existing
+in-memory grants remain valid until disconnect; saved conversations do not
+restore them.
+
+** Development
+
+Tests and profiling tools live in ~test/~ and ~tools/~. They do not read
+dotfiles or require a personal init file. Install runtime dependencies first;
+the full suite also uses Evil, Consult, Perspective, Marginalia and Corfu.
+Formula and GUI tests skip when their optional runtime support is unavailable.
+A separate subprocess checks loading and byte compilation with only the runtime
+dependencies, without Consult, Perspective, Popwin or asynchronous Org preview.
+
+#+begin_src sh
+make test
+make compile
+make lint
+# Point to an uninstalled dependency checkout when developing both packages:
+make test EXTRA_LOAD_PATH=/path/to/codex-acp.el
+#+end_src
+
+Set ~EMACS~ to an executable and ~ELPA_DIR~ to an installed package directory
+when they differ from the defaults. Compilation leaves the source tree clean.
+~M-x agent-chat-run-tests~ runs the Agent Chat suites from a source checkout.
+
+~recipes/agent-chat~ is a draft MELPA recipe. Submit codex-acp and any missing
+dependencies first. Packaging checks are preparation for maintainer review;
+this package has not been submitted to MELPA.
+
+** License
+
+GPL-3.0-or-later; see [[file:LICENSE][LICENSE]].

@@ -1,0 +1,2 @@
+(agent-chat :fetcher github :repo "Jamie-Cui/agent-chat"
+          :files ("*.el"))

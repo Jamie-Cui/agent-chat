@@ -1,0 +1,278 @@
+;;; agent-chat-mode-line-test.el --- Perspective indicators -*- lexical-binding: t; no-byte-compile: t; -*-
+
+(require 'consult)
+(require 'perspective)
+
+(require 'ert)
+(require 'agent-chat-mode-line)
+(require 'consult-agent-chat)
+(require 'perspective)
+(defvar persp-mode)
+
+(defun agent-chat-mode-line-test--conversation (name directory status &optional phase scope)
+  "Make a synthetic conversation NAME in DIRECTORY with STATUS, PHASE and SCOPE."
+  (let ((buffer (generate-new-buffer name)))
+    (with-current-buffer buffer
+      (setq major-mode 'agent-chat-mode
+            default-directory directory
+            agent-chat--scope (or scope 'directory)
+            agent-chat--state (agent-chat--state-create :status status)
+            agent-chat--session (agent-chat--session-create
+                                 :buffer buffer :cwd directory :phase (or phase 'ready)
+                                 :title name)))
+    buffer))
+
+(ert-deftest agent-chat-mode-line-test-compact-format-and-faces ()
+  (let ((agent-chat-mode-line--spinner-index 0))
+    (dolist (case '(([0 0 0 0 nil nil] . nil)
+                    ([3 0 0 0 nil nil] . "A3")
+                    ([3 2 0 0 nil nil] . "A3 ⠋2")
+                    ([3 1 1 0 nil nil] . "A3 ⠋ ?")
+                    ([3 0 0 1 nil nil] . "A3 !")
+                    ([7 2 2 2 nil nil] . "A7 ⠋2 ?2 !2")))
+      (should (equal (agent-chat-mode-line--build-render (car case)) (cdr case))))
+    (let ((value (agent-chat-mode-line--build-render [3 1 1 1 "Details" nil])))
+      (should (equal (get-text-property 0 'help-echo value) "Details"))
+      (should (eq (get-text-property (string-search "!" value) 'face value)
+                  'agent-chat-mode-line-attention-face)))))
+
+(defmacro agent-chat-mode-line-test--with-perspectives (&rest body)
+  "Run BODY with isolated Perspective membership and indicator state."
+  (declare (indent 0) (debug t))
+  `(let ((saved-hash (frame-parameter nil 'persp--hash))
+         (saved-current (frame-parameter nil 'persp--curr))
+         (persp-mode t)
+         (global-mode-string '("" "keep"))
+         (agent-chat-mode-line--perspectives (make-hash-table :test #'eq))
+         (agent-chat-mode-line--installed nil)
+         (agent-chat-mode-line--spinner-timer nil)
+         (agent-chat-mode-line--spinner-index 0)
+         (agent-chat-mode-line-spinner-interval 3600)
+         (agent-chat-mode-line-mode nil))
+     (unwind-protect
+         (progn
+           (set-frame-parameter nil 'persp--hash (make-hash-table :test #'equal))
+           (set-frame-parameter nil 'persp--curr nil)
+           ,@body)
+       (agent-chat-mode-line-mode -1)
+       (agent-chat-mode-line--stop-spinner)
+       (set-frame-parameter nil 'persp--hash saved-hash)
+       (set-frame-parameter nil 'persp--curr saved-current))))
+
+(defun agent-chat-mode-line-test--perspective (name buffers)
+  "Register a perspective with NAME and BUFFERS in the selected frame."
+  (let ((perspective (make-persp-internal :name name :buffers buffers)))
+    (puthash name perspective (perspectives-hash))
+    perspective))
+
+(ert-deftest agent-chat-mode-line-test-membership-isolation-and-status-transitions ()
+  (agent-chat-mode-line-test--with-perspectives
+    (let* ((first (agent-chat-mode-line-test--conversation " *activity-first*" "/tmp/same/" 'running))
+           (second (agent-chat-mode-line-test--conversation " *activity-second*" "/ssh:fixture:/different/" 'idle))
+           (other (agent-chat-mode-line-test--conversation " *activity-other*" "/tmp/same/" 'failed))
+           (history (generate-new-buffer " *activity-history*"))
+           (a (agent-chat-mode-line-test--perspective "A" (list first second history first)))
+           (b (agent-chat-mode-line-test--perspective "B" (list other)))
+           (empty (agent-chat-mode-line-test--perspective "empty" nil)))
+      (unwind-protect
+          (progn
+            (with-current-buffer history
+              (setq major-mode 'agent-chat-history-mode agent-chat--owner first))
+            (set-frame-parameter nil 'persp--curr a)
+            (cl-letf (((symbol-function 'project-current) (lambda (&rest _) (ert-fail "Project lookup")))
+                      ((symbol-function 'file-truename) (lambda (&rest _) (ert-fail "Filesystem lookup")))
+                      ((symbol-function 'buffer-list) (lambda (&rest _) (ert-fail "Global buffer scan"))))
+              (agent-chat-mode-line-mode 1)
+              (should (equal (agent-chat-mode-line--render) " (A: A2 ⠋) "))
+              (with-current-buffer other
+                ;; The displayed buffer's directory and membership do not
+                ;; change which perspective owns the mode-line statistics.
+                (should (equal (agent-chat-mode-line--render) " (A: A2 ⠋) ")))
+              (set-frame-parameter nil 'persp--curr b)
+              (should (equal (agent-chat-mode-line--render) " (B: A1 !) "))
+              (persp-add-buffer first)
+              (should (equal (agent-chat-mode-line--render) " (B: A2 ⠋ !) "))
+              (set-frame-parameter nil 'persp--curr empty)
+              (should (equal (agent-chat-mode-line--render) " (empty: A0) ")))
+            (with-current-buffer first
+              (setf (agent-chat--session-permissions agent-chat--session) '((permission)))
+              (agent-chat-mode-line--refresh-h))
+            (set-frame-parameter nil 'persp--curr a)
+            (should (equal (agent-chat-mode-line--render) " (A: A2 ?) "))
+            (set-frame-parameter nil 'persp--curr b)
+            (should (equal (agent-chat-mode-line--render) " (B: A2 ? !) "))
+            (should-not agent-chat-mode-line--spinner-timer)
+            (kill-buffer first)
+            (should (equal (agent-chat-mode-line--render) " (B: A1 !) "))
+            (set-frame-parameter nil 'persp--curr a)
+            (should (equal (agent-chat-mode-line--render) " (A: A1) ")))
+        (dolist (buffer (list first second other history))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest agent-chat-mode-line-test-redisplay-and-spinner-use-cache-only ()
+  (agent-chat-mode-line-test--with-perspectives
+    (let* ((perspective (agent-chat-mode-line-test--perspective "work" nil))
+           (entry (vector 2 1 0 0 "Test" nil)))
+      (puthash perspective entry agent-chat-mode-line--perspectives)
+      (set-frame-parameter nil 'persp--curr perspective)
+      (cl-letf (((symbol-function 'buffer-list) (lambda (&rest _) (ert-fail "Buffer scan")))
+                ((symbol-function 'persp-buffers) (lambda (&rest _) (ert-fail "Membership scan")))
+                ((symbol-function 'perspectives-hash) (lambda (&rest _) (ert-fail "Perspective scan")))
+                ((symbol-function 'project-current) (lambda (&rest _) (ert-fail "Project discovery"))))
+        (agent-chat-mode-line--spinner-tick)
+        (should (equal (agent-chat-mode-line--render) " (work: A2 ⠙) "))
+        (setf (persp-name perspective) "renamed")
+        (let ((value (agent-chat-mode-line--render)))
+          (should (equal value " (renamed: A2 ⠙) "))
+          (should (equal (get-text-property 0 'help-echo value) "Test"))
+          (should (eq (get-text-property (string-search "⠙" value) 'face value)
+                      'agent-chat-mode-line-active-face)))
+        (clrhash agent-chat-mode-line--perspectives)
+        (let ((value (agent-chat-mode-line--render)))
+          (should (equal value " (renamed: A0) "))
+          (should-not (get-text-property 0 'help-echo value)))
+        (let ((persp-mode nil))
+          (should (equal (agent-chat-mode-line--render) " (A0) ")))))))
+
+(ert-deftest agent-chat-mode-line-test-enable-kill-and-disable-cleanup ()
+  (agent-chat-mode-line-test--with-perspectives
+    (let* ((buffer (agent-chat-mode-line-test--conversation " *activity-lifecycle*" "/tmp/project-a/" 'running))
+           (perspective (agent-chat-mode-line-test--perspective "lifecycle" (list buffer))))
+      (set-frame-parameter nil 'persp--curr perspective)
+      (unwind-protect
+          (cl-letf (((symbol-function 'agent-chat--publish) (lambda () nil)))
+            (agent-chat-mode-line-mode 1)
+            (agent-chat-mode-line-mode 1)
+            (should (= 1 (cl-count 'agent-chat-mode-line--mode-line global-mode-string)))
+            (should (timerp agent-chat-mode-line--spinner-timer))
+            (with-current-buffer buffer
+              (setf (agent-chat--state-status agent-chat--state) 'idle)
+              (agent-chat--publish))
+            (should-not agent-chat-mode-line--spinner-timer)
+            (kill-buffer buffer)
+            (should (equal (agent-chat-mode-line--render) " (lifecycle: A0) "))
+            (agent-chat-mode-line-mode -1)
+            (should (equal global-mode-string '("" "keep")))
+            (should (zerop (hash-table-count agent-chat-mode-line--perspectives)))
+            (dolist (function agent-chat-mode-line--update-functions)
+              (should-not (advice-member-p #'agent-chat-mode-line--refresh-h function)))
+            (dolist (function agent-chat-mode-line--membership-functions)
+              (should-not (advice-member-p #'agent-chat-mode-line--membership-a function)))
+            (dolist (hook agent-chat-mode-line--refresh-hooks)
+              (should-not (memq #'agent-chat-mode-line--refresh-h (symbol-value hook)))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest agent-chat-mode-line-test-equal-perspective-names-in-different-frames ()
+  (skip-unless (display-graphic-p))
+  (agent-chat-mode-line-test--with-perspectives
+    (let* ((buffer (agent-chat-mode-line-test--conversation " *activity-frame*" "/tmp/same/" 'running))
+           (first (agent-chat-mode-line-test--perspective "same" (list buffer)))
+           (after-make-frame-functions nil)
+           (delete-frame-functions nil)
+           (frame (make-frame '((visibility . nil))))
+           second)
+      (unwind-protect
+          (progn
+            (set-frame-parameter nil 'persp--curr first)
+            (with-selected-frame frame
+              (set-frame-parameter nil 'persp--hash (make-hash-table :test #'equal))
+              (setq second (agent-chat-mode-line-test--perspective "same" nil))
+              (set-frame-parameter nil 'persp--curr second))
+            (agent-chat-mode-line-mode 1)
+            (should (equal (agent-chat-mode-line--render) " (same: A1 ⠋) "))
+            (with-selected-frame frame
+              (should (equal (agent-chat-mode-line--render) " (same: A0) "))
+              (persp-add-buffer buffer)
+              (should (equal (agent-chat-mode-line--render) " (same: A1 ⠋) ")))
+            (should (= 2 (hash-table-count agent-chat-mode-line--perspectives)))
+            (should-not (eq (gethash first agent-chat-mode-line--perspectives)
+                            (gethash second agent-chat-mode-line--perspectives))))
+        (delete-frame frame t)
+        (kill-buffer buffer)))))
+
+(ert-deftest agent-chat-mode-line-test-perspective-switch-updates-all-fields ()
+  ;; Exercise real Perspective and redisplay in an isolated Emacs process;
+  ;; never change the workspaces of a live editor with Perspective enabled.
+  (skip-unless (and (display-graphic-p) (not persp-mode)))
+  (let* ((first (agent-chat-mode-line-test--conversation " *activity-A-running*" "/tmp/activity-a/" 'running))
+         (waiting (agent-chat-mode-line-test--conversation " *activity-A-waiting*" "/tmp/activity-a/" 'idle))
+         (other (agent-chat-mode-line-test--conversation " *activity-B-failed*" "/tmp/activity-a/" 'failed))
+         (edit-a (generate-new-buffer " *activity-edit-A*"))
+         (edit-b (generate-new-buffer " *activity-edit-B*"))
+         (empty (generate-new-buffer " *activity-empty*"))
+         (buffers (list first waiting other edit-a edit-b empty))
+         (persp-suppress-no-prefix-key-warning t)
+         (persp-avoid-killing-last-buffer-in-perspective nil)
+         (persp-show-modestring nil)
+         (agent-chat-mode-line-spinner-interval 3600))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer waiting
+            (setf (agent-chat--session-permissions agent-chat--session) '((permission))))
+          (cl-loop for buffer in (list edit-a edit-b empty)
+                   for directory in '("/tmp/activity-a/src/" "/tmp/activity-a/src/" "/tmp/activity-empty/")
+                   do (with-current-buffer buffer (setq default-directory directory)))
+          (persp-mode 1)
+          (agent-chat-mode-line-mode 1)
+          (cl-labels
+              ((check (name expected &optional title)
+                 (persp-switch name)
+                 ;; Match the command loop, then verify the native mode-line
+                 ;; output as well as the segment and its tooltip.
+                 (run-hooks 'post-command-hook)
+                 (redisplay t)
+                 (with-current-buffer (window-buffer (selected-window))
+                   (let ((value (agent-chat-mode-line--render)))
+                     (should (equal value (concat " (" expected ") ")))
+                     (let ((entries (consult-agent-chat-buffer--buffers))
+                           (cached (gethash (persp-curr) agent-chat-mode-line--perspectives)))
+                       (should (= (length entries) (aref cached 0)))
+                       (should (cl-every (lambda (buffer) (memq buffer (persp-buffers (persp-curr))))
+                                         entries)))
+                     (should (equal (format-mode-line
+                                     agent-chat-mode-line--mode-line nil
+                                     (selected-window) (current-buffer)) value))
+                     (if title
+                         (should (string-search title (get-text-property 0 'help-echo value)))
+                       (should-not (get-text-property 0 'help-echo value)))))))
+            (dolist (entry `(("activity-A" . ,edit-a) ("activity-B" . ,edit-b)
+                             ("activity-empty" . ,empty)))
+              (persp-switch (car entry))
+              (switch-to-buffer (cdr entry))
+              (pcase (car entry)
+                ("activity-A" (persp-add-buffer first) (persp-add-buffer waiting))
+                ("activity-B" (persp-add-buffer other))))
+            (dotimes (_ 2)
+              (check "activity-A" "activity-A: A2 ⠋ ?" "activity-A-running")
+              (check "activity-B" "activity-B: A1 !" "activity-B-failed")
+              (should-not (string-search "activity-A" (get-text-property
+                                                       0 'help-echo (agent-chat-mode-line--render))))
+              (check "activity-empty" "activity-empty: A0"))
+            (persp-switch "activity-B")
+            (persp-add-buffer first)
+            (check "activity-B" "activity-B: A2 ⠋ !" "activity-A-running")
+            (check "activity-A" "activity-A: A2 ⠋ ?" "activity-A-waiting")
+            (check "activity-empty" "activity-empty: A0")
+            ;; Complete and close background conversations while the empty
+            ;; workspace is active.  Returning must use the updated counts.
+            (with-current-buffer first
+              (setf (agent-chat--state-status agent-chat--state) 'idle)
+              (agent-chat-mode-line--refresh-h))
+            (check "activity-B" "activity-B: A2 !" "activity-B-failed")
+            (persp-forget-buffer first)
+            (should (buffer-live-p first))
+            (check "activity-B" "activity-B: A1 !" "activity-B-failed")
+            (kill-buffer waiting)
+            (check "activity-A" "activity-A: A1" "activity-A-running")
+            (check "activity-empty" "activity-empty: A0")
+            (kill-buffer first)
+            (check "activity-A" "activity-A: A0")
+            (check "activity-B" "activity-B: A1 !" "activity-B-failed")
+            (persp-rename "activity-renamed")
+            (check "activity-renamed" "activity-renamed: A1 !" "activity-B-failed")))
+      (agent-chat-mode-line-mode -1)
+      (persp-mode -1)
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(provide 'agent-chat-mode-line-test)
