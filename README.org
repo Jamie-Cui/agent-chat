@@ -7,16 +7,13 @@ workspace tools. Loading the package does not start an agent process.
 ** Installation
 
 Requires Emacs 30.1 or newer, ACP 0.17.1, Ebox 3.0.0, Transient 0.11.0 and
-codex-acp 0.1.0 or newer. Ebox also requires Ecss. Until these packages are
-available from your package archives, install them from their repositories:
+codex-acp 0.1.0 or newer. The package header declares Ebox as a dependency,
+and Ebox declares Ecss as its dependency. Package.el installs these from
+your configured archives; they need no separate declarations in your init.
+If an archive does not provide them yet, follow the one-time source setup
+below before installing Agent Chat.
 
 #+begin_src emacs-lisp
-(use-package ecss
-  :vc (:url "https://github.com/emacs-taf/ecss" :lisp-dir ".")
-  :ensure t :defer t)
-(use-package ebox
-  :vc (:url "https://github.com/emacs-taf/ebox" :lisp-dir ".")
-  :ensure t :defer t)
 (use-package codex-acp
   :vc (:url "https://github.com/Jamie-Cui/codex-acp.el")
   :ensure t :defer t)
@@ -32,6 +29,22 @@ Run ~M-x agent-chat~. Configure ~agent-chat-agents~ for external ACP agents;
 The Emacs backend uses [[https://github.com/Jamie-Cui/codex-acp.el][codex-acp.el]]
 and its workspace tools. Authenticate the Codex CLI before opening a connection.
 Magent support is optional and requires its separate package.
+
+*** Source-only dependencies
+
+Package dependency headers contain names and minimum versions, not Git URLs.
+Until your archives provide Ebox and Ecss, evaluate this once before installing
+Agent Chat. These are setup commands; keep them out of the normal init file.
+
+#+begin_src emacs-lisp
+(require 'package-vc)
+(unless (package-installed-p 'ecss "0.1.0")
+  (package-vc-install '(ecss :url "https://github.com/emacs-taf/ecss"
+                            :lisp-dir ".")))
+(unless (package-installed-p 'ebox "3.0.0")
+  (package-vc-install '(ebox :url "https://github.com/emacs-taf/ebox"
+                            :lisp-dir ".")))
+#+end_src
 
 ** Optional integrations
 
