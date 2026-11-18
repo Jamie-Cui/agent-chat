@@ -101,12 +101,12 @@ Preserve its session and membership elsewhere.  Do not preview candidates."
       (unless (and persp-mode (eq perspective (persp-curr)))
         (user-error "The current perspective has changed"))
       (unless (and (buffer-live-p buffer) (memq buffer buffers)
-                   (eq buffer (agent-chat--conversation-buffer buffer)))
+                   (eq buffer (agent-chat-owner buffer)))
         (user-error "The selected conversation is no longer available"))
       ;; Include the composer and its existing messages/queue views together.
       ;; Adding membership does not move, display or restart the conversation.
       (dolist (view (buffer-list))
-        (when (eq buffer (agent-chat--conversation-buffer view))
+        (when (eq buffer (agent-chat-owner view))
           (persp-add-buffer view))))))
 
 (defun consult-agent-chat-buffer--ignore (perspective)
@@ -137,7 +137,7 @@ Do not preview candidates: choosing an action must not display another session."
       (dolist (view (append (remq buffer (copy-sequence (persp-buffers perspective)))
                            (list buffer)))
         (when (and (buffer-live-p view)
-                   (eq buffer (agent-chat--conversation-buffer view)))
+                   (eq buffer (agent-chat-owner view)))
           (let ((kill-buffer-query-functions
                  (remq 'persp-maybe-kill-buffer kill-buffer-query-functions)))
             (persp-forget-buffer view)))))))

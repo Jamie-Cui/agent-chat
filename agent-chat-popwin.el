@@ -31,6 +31,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'agent-chat)
 (declare-function popwin:current-context "popwin" ())
 (declare-function popwin:use-context "popwin" (context))
 (declare-function popwin:stop-close-popup-window-timer "popwin" ())
@@ -42,8 +43,6 @@
 (defvar popwin:popup-buffer)
 (defvar popwin:popup-last-config)
 (defvar popwin:focus-window)
-
-(declare-function agent-chat--redraw "agent-chat" ())
 
 (defun agent-chat-popwin--prune-contexts ()
   "Forget stale Popwin contexts without closing their repurposed windows."
@@ -69,27 +68,61 @@
     (unless popwin:popup-window
       (popwin:stop-close-popup-window-timer))))
 
+(defun agent-chat-popwin--view-replaced (window)
+  "Synchronize Popwin after a view changes the buffer in WINDOW."
+  (when (and (window-live-p window)
+             (eq (window-buffer window) (agent-chat-owner (window-buffer window))))
+    (when (eq window popwin:popup-window)
+      (setq popwin:popup-buffer (window-buffer window)
+            popwin:popup-last-config
+            (cons popwin:popup-buffer (cdr popwin:popup-last-config))))
+    (dolist (context popwin:context-stack)
+      (when (eq window (plist-get context 'popwin:popup-window))
+        (setf (plist-get context 'popwin:popup-buffer) (window-buffer window)
+              (plist-get context 'popwin:popup-last-config)
+              (cons (window-buffer window)
+                    (cdr (plist-get context 'popwin:popup-last-config)))))))
+  (agent-chat-popwin--prune-contexts))
+
+(defun agent-chat-popwin-setup ()
+  "Install the optional Popwin adapter's layout and identity hooks.
+Repeated calls are safe.  The core view never depends on Popwin."
+  (require 'popwin)
+  (add-hook 'popwin:after-popup-hook #'agent-chat-popwin-layout)
+  (add-hook 'agent-chat-view-replaced-functions #'agent-chat-popwin--view-replaced))
+
+(defun agent-chat-popwin-close-frame (&optional frame)
+  "Close FRAME's Popwin popups before its workspace layout is saved.
+FRAME defaults to the selected frame.  Own timer suspension, stacked context
+cleanup and native view deletion without disturbing any conversation data."
+  (setq frame (or frame (selected-frame)))
+  (agent-chat-popwin--prune-contexts)
+  (popwin:stop-close-popup-window-timer)
+  (unwind-protect
+      (while (and (window-live-p popwin:popup-window)
+                  (eq (window-frame popwin:popup-window) frame))
+        (popwin:close-popup-window)
+        (agent-chat-popwin--prune-contexts))
+    (when (window-live-p popwin:popup-window)
+      (popwin:start-close-popup-window-timer))))
+
 (defun agent-chat-popwin-layout ()
-  "Complete an Agent Chat popup's native window pair before returning focus."
+  "Complete an Agent Chat popup's native view before returning focus."
   (require 'popwin)
   (when (window-live-p popwin:popup-window)
-    (save-selected-window
-      (with-current-buffer (window-buffer popwin:popup-window)
-        (when (derived-mode-p 'agent-chat-mode)
-          (agent-chat--redraw))))))
+    (let ((buffer (window-buffer popwin:popup-window)))
+      (when (eq buffer (agent-chat-owner buffer))
+        (agent-chat-view-show buffer popwin:popup-window t)))))
 
 (defun agent-chat-popwin--switch-conversation (window buffer norecord)
-  "Show conversation BUFFER in dedicated WINDOW, respecting NORECORD.
-Only conversation navigation releases the window's native dedication."
-  (unless (with-current-buffer buffer (derived-mode-p 'agent-chat-mode))
-    (user-error "Not an Agent Chat conversation buffer"))
+  "Show conversation BUFFER in WINDOW, respecting NORECORD.
+The view owns the full switch transaction; this adapter owns its timer."
+  (popwin:stop-close-popup-window-timer)
   (unwind-protect
-      (progn
-        (set-window-dedicated-p window nil)
-        (with-selected-window window
-          (let ((switch-to-buffer-obey-display-actions nil))
-            (switch-to-buffer buffer norecord t))))
-    (when (window-live-p window) (set-window-dedicated-p window t))))
+      (prog1 (agent-chat-view-show buffer window norecord)
+        (agent-chat-popwin--view-replaced window))
+    (when (window-live-p popwin:popup-window)
+      (popwin:start-close-popup-window-timer))))
 
 (defun agent-chat-popwin-reuse-window (buffer _alist)
   "Display Agent Chat BUFFER in its existing Popwin panel, without selecting it.
@@ -101,9 +134,6 @@ Return nil when no Agent Chat popup is available, so Popwin opens one normally."
                (derived-mode-p 'agent-chat-mode)))
     (let ((window popwin:popup-window))
       (agent-chat-popwin--switch-conversation window buffer t)
-      (setq popwin:popup-buffer buffer
-            popwin:popup-last-config (cons buffer (cdr popwin:popup-last-config)))
-      (agent-chat-popwin-layout)
       window)))
 
 (defun agent-chat-popwin-state ()
@@ -122,12 +152,7 @@ Return nil when no Agent Chat popup is available, so Popwin opens one normally."
         ((show (buffer norecord)
            (agent-chat-popwin--prune-contexts)
            (if (and (window-live-p window) (eq window popwin:popup-window))
-               (progn
-                 (agent-chat-popwin--switch-conversation window buffer norecord)
-                 ;; Keep popwin's buffer identity in sync when reusing its pane.
-                 (setq popwin:popup-buffer buffer
-                       popwin:popup-last-config
-                       (cons buffer (cdr popwin:popup-last-config))))
+               (agent-chat-popwin--switch-conversation window buffer norecord)
              (when (eq window popwin:popup-window)
                (popwin:close-popup-window t))
              (setq window (save-selected-window

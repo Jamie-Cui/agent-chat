@@ -116,6 +116,7 @@
 (require 'tabulated-list)
 (require 'acp)
 (require 'agent-chat-quota)
+(require 'agent-chat-view)
 (require 'project)
 (require 'dired)
 (require 'editor-context)
@@ -2358,8 +2359,8 @@ execution; the draft header displays the pending queue."
         'face 'agent-chat-queue-title)))))
 
 (defun agent-chat--header-text (text)
-  "Make dynamic TEXT safe for header-line percent expansion."
-  (replace-regexp-in-string "%" "%%" text t t))
+  "Make dynamic TEXT safe for header-line percent expansion, keeping properties."
+  (replace-regexp-in-string "%" (lambda (match) (concat match match)) text t t))
 
 (defun agent-chat--directory-label ()
   "Return a short workspace label while retaining the remote host."
@@ -2712,15 +2713,22 @@ Neither path creates a temporary file."
   "Keep the renderer's faces between BEG and END through native JIT passes."
   `(jit-lock-bounds ,beg . ,end))
 
-(defun agent-chat--conversation-buffer (&optional buffer)
-  "Return the conversation owning BUFFER, or nil outside an Agent Chat view."
-  (with-current-buffer (or buffer (current-buffer))
-    (let ((owner (cond ((derived-mode-p 'agent-chat-mode) (current-buffer))
-                       ((derived-mode-p 'agent-chat-history-mode) agent-chat--owner)
-                       ((derived-mode-p 'agent-chat-queue-mode)
-                        agent-chat--queue-owner))))
-      (and (buffer-live-p owner)
-           (with-current-buffer owner (derived-mode-p 'agent-chat-mode)) owner))))
+(defun agent-chat-owner (&optional buffer)
+  "Return the live conversation owning BUFFER, or nil if it has none.
+BUFFER defaults to the current buffer.  Draft, message and queue buffers
+share the same owner, regardless of visibility or display rules.  A dead
+buffer or a view whose owner has been killed has no owner."
+  (let ((buffer (if buffer (get-buffer buffer) (current-buffer))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let ((owner (cond ((derived-mode-p 'agent-chat-mode) (current-buffer))
+                           ((derived-mode-p 'agent-chat-history-mode) agent-chat--owner)
+                           ((derived-mode-p 'agent-chat-queue-mode)
+                            agent-chat--queue-owner))))
+          (and (buffer-live-p owner)
+               (with-current-buffer owner (derived-mode-p 'agent-chat-mode)) owner))))))
+
+(defalias 'agent-chat--conversation-buffer #'agent-chat-owner)
 
 (defun agent-chat--message-buffer ()
   "Return or create this conversation's private message buffer."
@@ -3107,80 +3115,6 @@ retain their parsed markup, native code faces and measured lines."
          (min maximum (max agent-chat-prompt-min-height
                            (1+ (vertical-motion maximum window))))))))
 
-(defun agent-chat--pair-window (prompt)
-  "Pair native PROMPT with this conversation's messages, returning the latter.
-The parent is an atomic window: deleting or maximizing either child acts on
-both.  Both children are strongly dedicated to their conversation buffers.
-The original window remains the prompt, retaining Popwin's identity."
-  (let* ((history (window-parameter prompt 'agent-chat-history-window))
-         (buffer (agent-chat--message-buffer)))
-    ;; Window-state restoration can recreate windows without pointer-valued
-    ;; parameters.  Recover the native pair from its tree and owned buffers.
-    (when-let* ((sibling (window-prev-sibling prompt))
-                ((window-live-p sibling))
-                ((eq (window-buffer sibling) buffer))
-                ((null (window-prev-sibling sibling)))
-                ((null (window-next-sibling prompt)))
-                ((= (car (window-edges sibling)) (car (window-edges prompt)))))
-      (setq history sibling))
-    (unless (and (window-live-p history)
-                 (eq (window-parent prompt) (window-parent history)))
-      (let* ((ignore-window-parameters t)
-             (window-combination-limit t)
-             (window-min-height 2)
-             (size (agent-chat--prompt-window-size prompt (window-total-height prompt))))
-        (setq history (split-window prompt size 'above))))
-    (window-make-atom (window-parent prompt))
-    (set-window-parameter prompt 'agent-chat-history-window history)
-    (set-window-parameter history 'agent-chat-prompt-window prompt)
-    (set-window-parameter prompt 'delete-window #'agent-chat--delete-pair)
-    (set-window-parameter history 'delete-window #'agent-chat--delete-pair)
-    (unless (eq (window-buffer history) buffer)
-      (with-current-buffer (window-buffer history)
-        (when (derived-mode-p 'agent-chat-history-mode)
-          (goto-char (window-point history))
-          (setq agent-chat--history-start (window-start history))))
-      (set-window-dedicated-p history nil)
-      (set-window-buffer history buffer)
-      (with-current-buffer buffer
-        (set-window-point history (point))
-        (set-window-start history agent-chat--history-start t)))
-    ;; Reused or restored windows can retain another buffer's left gutter.
-    (dolist (window (list prompt history))
-      (set-window-dedicated-p window t)
-      (let ((margins (window-margins window)))
-        (when (car margins)
-          (set-window-margins window 0 (cdr margins)))))
-    (let* ((root (window-parent prompt))
-           (desired (agent-chat--prompt-window-size prompt (window-total-height root)))
-           (delta (- desired (window-total-height prompt))))
-      (unless (= delta 0)
-        (let ((ignore-window-parameters t))
-          (window-resize prompt delta nil t))))
-    history))
-
-(defun agent-chat--delete-pair (window)
-  "Hide WINDOW's pair, including when maximized to fill the frame."
-  (let* ((prompt (or (window-parameter window 'agent-chat-prompt-window) window))
-         (history (window-parameter prompt 'agent-chat-history-window))
-         (root (window-atom-root prompt))
-         (ignore-window-parameters t))
-    (if (window-parent root)
-        (delete-window root)
-      ;; Keep the reading window as the sole ordinary window.  Deleting the
-      ;; original prompt also lets Popwin recognize its popup as closed.
-      (let ((replacement (other-buffer (window-buffer prompt) t (window-frame prompt))))
-        (with-current-buffer (window-buffer history)
-          (goto-char (window-point history))
-          (setq agent-chat--history-start (window-start history)))
-        (walk-window-subtree
-         (lambda (child) (set-window-parameter child 'window-atom nil)) root t)
-        (delete-window prompt)
-        (set-window-parameter history 'delete-window nil)
-        (set-window-parameter history 'agent-chat-prompt-window nil)
-        (set-window-dedicated-p history nil)
-        (set-window-buffer history replacement)))))
-
 (defun agent-chat--history-at-end-p (window)
   "Whether WINDOW is displaying the end of its message buffer."
   (with-current-buffer (window-buffer window)
@@ -3252,20 +3186,11 @@ The original window remains the prompt, retaining Popwin's identity."
           (set-buffer-modified-p nil))))))
 
 (defun agent-chat--redraw ()
-  "Maintain the native window pair and render the latest conversation."
+  "Maintain the native view and render the latest conversation."
   (when (and (derived-mode-p 'agent-chat-mode)
              agent-chat--state (not agent-chat--drawing))
-    (let* ((agent-chat--drawing t)
-           (prompts (sort (get-buffer-window-list (current-buffer) nil t)
-                          (lambda (a b) (< (window-body-width a) (window-body-width b)))))
-           histories)
-      (when prompts (agent-chat--render-queue (car prompts)))
-      (dolist (prompt prompts)
-        (push (agent-chat--pair-window prompt) histories))
-      (when histories
-        (agent-chat--render-history
-         (car (sort histories (lambda (a b) (< (window-body-width a)
-                                              (window-body-width b))))))))))
+    (let ((agent-chat--drawing t))
+      (agent-chat-view-refresh (current-buffer)))))
 
 (defun agent-chat--window-change (window)
   "Refit the native conversation containing WINDOW after layout changes."
@@ -3274,28 +3199,6 @@ The original window remains the prompt, retaining Popwin's identity."
       (with-current-buffer owner
         (agent-chat--redraw)
         (agent-chat-quota--maybe-refresh)))))
-
-(defun agent-chat--frame-window-change (frame)
-  "Maintain owned pairs after buffer replacement or workspace restore in FRAME."
-  (dolist (window (window-list frame 'no-minibuffer))
-    (when (window-live-p window)
-      (let ((history (window-parameter window 'agent-chat-history-window)))
-        (if (with-current-buffer (window-buffer window)
-              (derived-mode-p 'agent-chat-mode))
-            (agent-chat--window-change window)
-          (when (and (window-live-p history)
-                     (eq (window-parent window) (window-parent history)))
-            ;; Replacing the draft with an ordinary buffer dismisses the
-            ;; conversation, preserving that replacement and all session data.
-            (with-current-buffer (window-buffer history)
-              (goto-char (window-point history))
-              (setq agent-chat--history-start (window-start history)))
-            (walk-window-subtree
-             (lambda (child) (set-window-parameter child 'window-atom nil))
-             (window-parent window) t)
-            (set-window-parameter window 'agent-chat-history-window nil)
-            (set-window-parameter window 'delete-window nil)
-            (let ((ignore-window-parameters t)) (delete-window history))))))))
 
 (defun agent-chat--math-refresh ()
   "Refresh completed previews, deferring reading reflow during selection."
@@ -5126,7 +5029,7 @@ Ignore a superseded selection, a closed session, or a newly started turn."
   (face-spec-set 'agent-chat-user agent-chat--user-face-spec 'face-defface-spec)
   (face-spec-set 'agent-chat-code agent-chat--code-face-spec 'face-defface-spec)
   (add-hook 'kill-emacs-query-functions #'agent-chat--queue-confirm-exit)
-  (add-hook 'window-buffer-change-functions #'agent-chat--frame-window-change)
+  (add-hook 'window-buffer-change-functions #'agent-chat-view-maintain-frame)
   (define-key agent-chat-queue-mode-map (kbd "s") #'agent-chat-queue-steer)
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer

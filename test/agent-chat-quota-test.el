@@ -283,6 +283,28 @@
         (should-not (string-search "Task 100%%" text))))))
 
 
+(ert-deftest agent-chat-quota-percent-preserves-style-and-interaction ()
+  (with-temp-buffer
+    (setq agent-chat--session (agent-chat--session-create :title "Task 100%")
+          agent-chat-quota--client '(fixture))
+    (dolist (case '((28 . shadow) (80 . warning) (90 . error)))
+      (agent-chat-quota--accept (agent-chat-quota-test-data (car case)))
+      (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 150)))
+        (let* ((text (agent-chat-quota-test-text (agent-chat--prompt-header)))
+               (title-percent (string-search "%" text))
+               (start (string-search "Remaining" text)))
+          (should title-percent)
+          (should start)
+          (should (eq 'agent-chat-header (get-text-property title-percent 'face text)))
+          (while (setq start (string-search "%" text start))
+            (should (eq (cdr case) (get-text-property start 'face text)))
+            (dolist (property '(help-echo mouse-face local-map))
+              (should (get-text-property start property text))
+              (should (equal (get-text-property (1- start) property text)
+                             (get-text-property start property text))))
+            (setq start (1+ start))))))))
+
+
 (ert-deftest agent-chat-quota-backend-replacement-forgets-old-account ()
   (with-temp-buffer
     (let ((old-client '(old-account))

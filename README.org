@@ -53,8 +53,10 @@ Agent Chat. These are setup commands; keep them out of the normal init file.
 - ~consult-agent-chat~ requires Consult and Perspective.
 - ~agent-chat-mode-line~ requires Perspective; enable
   ~agent-chat-mode-line-mode~ explicitly.
-- ~agent-chat-popwin~ requires Popwin. Add ~agent-chat-popwin-layout~ to
-  ~popwin:after-popup-hook~ and configure your desired popup dimensions.
+- ~agent-chat-popwin~ requires Popwin. Call ~agent-chat-popwin-setup~ to
+  install its layout and buffer-identity hooks, then configure your desired
+  popup dimensions. Workspace integrations call ~agent-chat-popwin-close-frame~
+  before saving the old layout; timer and context handling stay in the adapter.
 - Evil, Embark, Org asynchronous formula preview and Mermaid rendering are
   optional. The core conversation UI works without them.
 - ~editor-context~ captures source selections for drafts and clipboard callers.
@@ -67,6 +69,16 @@ commands to navigate, hide or maximize the pair; hiding retains the session
 and draft. Popwin placement and additional window keys belong to your config.
 Creating a conversation from either pane reuses the pair while the previous
 conversation continues in the background.
+
+Integrations use ~agent-chat-owner~ to identify a conversation from either pane,
+including hidden buffers. Display-rule matching does not define ownership.
+The ~agent-chat-view~ module owns pairing, atomic groups and dedication:
+~agent-chat-view-show~ displays or switches a session in a chosen window;
+~agent-chat-view-replace~ releases the pair to show an ordinary buffer in the
+chosen pane; ~agent-chat-view-hide~ hides the pair. Show and replace restore
+the complete prior layout on failure. These operations preserve session data,
+connections and drafts. Callers choose placement without editing window metadata.
+
 Consult (~M-x consult-agent-chat-buffer~) lists one entry per conversation and previews both panes.
 Its columns show the buffer name, session title and status.  Missing titles
 show as Untitled; long titles are abbreviated.  Status shares the header's
